@@ -37,6 +37,7 @@ fn get_repos() -> Vec<PathBuf> {
             }
         }
     }
+    // Standard repository paths in case portageq query fails
     let default_repos = ["/var/db/repos/gentoo", "/var/db/repos/guru"];
     for &d in &default_repos {
         let p = PathBuf::from(d);
@@ -48,9 +49,9 @@ fn get_repos() -> Vec<PathBuf> {
 }
 
 struct MatchResult {
-    full_atom: String,      // e.g. "gui-apps/quickshell"
-    pkg_name: String,       // e.g. "quickshell"
-    has_live: bool,         // has ** (e.g. 9999 / missing keyword)
+    full_atom: String,      // Category and package name (e.g., "gui-apps/quickshell")
+    pkg_name: String,       // Package name only (e.g., "quickshell")
+    has_live: bool,         // Needs live or unkeyworded unmasking (e.g., 9999 or **)
 }
 
 fn scan_package(target: &str) -> Option<MatchResult> {
@@ -167,7 +168,7 @@ fn get_target_file(base_dir: &str, clean_name: &str) -> PathBuf {
     }
 }
 
-// Parses emerge --autounmask output to unmask dependencies and USE flags
+// Ask emerge to calculate required keywords, masks, and USE changes for all dependencies
 fn resolve_masked_dependencies(pkg: &str, clean_name: &str) {
     let output = Command::new("emerge")
         .args(["--autounmask", "--autounmask-write", "-p", pkg])
@@ -206,6 +207,9 @@ fn resolve_masked_dependencies(pkg: &str, clean_name: &str) {
         } else if trimmed.starts_with("The following USE changes are necessary") {
             current_sec = Section::Use;
             continue;
+        } else if trimmed.starts_with("The following USE changes are necessary") {
+            current_sec = Section::Use;
+            continue;
         } else if trimmed.starts_with("The following mask changes are necessary") {
             current_sec = Section::Unmask;
             continue;
@@ -236,7 +240,7 @@ fn resolve_masked_dependencies(pkg: &str, clean_name: &str) {
         }
     }
 
-    // Auto-merge any config protect files created by emerge if etc-update is present
+    // Merge any protected configuration update files quietly
     let _ = Command::new("etc-update")
         .args(["--automode", "-5", "/etc/portage"])
         .output();
@@ -245,8 +249,8 @@ fn resolve_masked_dependencies(pkg: &str, clean_name: &str) {
 fn main() -> ExitCode {
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
-        eprintln!("Использование: unmask <имя_пакета>");
-        eprintln!("Пример: unmask quickshell  или  unmask gui-apps/quickshell");
+        eprintln!("Usage: unmask <package_name>");
+        eprintln!("Example: unmask quickshell  or  unmask gui-apps/quickshell");
         return ExitCode::FAILURE;
     }
 
@@ -256,7 +260,7 @@ fn main() -> ExitCode {
     let pkg_info = match scan_package(target) {
         Some(info) => info,
         None => {
-            eprintln!("Ошибка: Пакет '{}' не найден в доступных репозиториях portage.", target);
+            eprintln!("Error: Package '{}' was not found in any available portage repositories.", target);
             return ExitCode::FAILURE;
         }
     };
@@ -269,26 +273,27 @@ fn main() -> ExitCode {
     let kw_entry = format!("{} ~{}", pkg_info.full_atom, arch);
     let live_entry = format!("{} **", pkg_info.full_atom);
 
-    // 1. Write direct target to package.accept_keywords
+    // 1. Write the package keyword entry
     if let Err(e) = append_entry_if_missing(&keywords_file, &kw_entry) {
-        eprintln!("[-] Ошибка записи в {}: {}. Запустите через doas/sudo!", keywords_file.display(), e);
+        eprintln!("Error writing to {}: {}. Please run with doas or sudo.", keywords_file.display(), e);
         return ExitCode::FAILURE;
     }
 
+    // Unmask live / unkeyworded versions if applicable
     if pkg_info.has_live {
         if let Err(e) = append_entry_if_missing(&keywords_file, &live_entry) {
-            eprintln!("[-] Ошибка записи в {}: {}. Запустите через doas/sudo!", keywords_file.display(), e);
+            eprintln!("Error writing to {}: {}. Please run with doas or sudo.", keywords_file.display(), e);
             return ExitCode::FAILURE;
         }
     }
 
-    // 2. Write direct target to package.unmask
+    // 2. Write the package unmask entry
     if let Err(e) = append_entry_if_missing(&unmask_file, &pkg_info.full_atom) {
-        eprintln!("[-] Ошибка записи в {}: {}. Запустите через doas/sudo!", unmask_file.display(), e);
+        eprintln!("Error writing to {}: {}. Please run with doas or sudo.", unmask_file.display(), e);
         return ExitCode::FAILURE;
     }
 
-    // 3. Resolve all masked dependencies and required USE flags recursively
+    // 3. Resolve all masked dependencies and required USE flags
     resolve_masked_dependencies(&pkg_info.full_atom, &clean_name);
 
     println!("unmask successful");
