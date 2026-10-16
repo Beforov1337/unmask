@@ -222,7 +222,13 @@ fn resolve_masked_dependencies(pkg: &str, clean_name: &str) {
             continue;
         }
 
-        if trimmed.starts_with('#') || trimmed.is_empty() {
+        if trimmed.starts_with('#') || trimmed.starts_with('(') || trimmed.is_empty() {
+            continue;
+        }
+
+        // Valid atoms must contain a category separator '/'
+        let first_token = trimmed.split_whitespace().next().unwrap_or("");
+        if !first_token.contains('/') {
             continue;
         }
 
